@@ -1,0 +1,37 @@
+# --- Python basics ---
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# --- Environment files ---
+.env
+.env.*
+
+# --- Jupyter/IPython ---
+.ipynb_checkpoints/
+
+# --- macOS/Linux system cruft ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Logs and cache ---
+*.log
+*.tmp
+*.bak
+*.swp
+.cache/
+*.coverage
+.coverage.*
+
+# --- Virtual environments ---
+.venv/
+venv/
+ENV/
+env/
