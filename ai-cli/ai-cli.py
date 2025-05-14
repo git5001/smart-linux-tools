@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import shutil
 import subprocess
 import platform
 from enum import Enum, auto
@@ -52,7 +53,18 @@ if not API_KEY:
 
 client = OpenAI(api_key=API_KEY)
 
-
+def format_output(text: str, indent: str = "    ") -> str:
+    width = shutil.get_terminal_size((76, 20)).columns
+    wrapper = textwrap.TextWrapper(
+        width=width,
+        initial_indent="",              # First line has no indent
+        subsequent_indent=indent        # Wrapped lines get indent
+    )
+    
+    paragraphs = text.strip().split("\n")
+    wrapped = [wrapper.fill(p) for p in paragraphs if p.strip()]
+    return "\n".join(wrapped)
+    
 def env_info() -> Dict[str, str]:
     """Return coarse information about the current environment, normalizing
     Windows drive paths into MSYS2 POSIX form when MSYSTEM is set."""
@@ -175,11 +187,12 @@ def build_chat_prompt(query: str, extra: List[str], include_history: bool) -> st
     intro = textwrap.dedent("""
         You are a technical CLI assistant that reasons about previous commands
         and their outputs. Use only the information in the context.
-        o Never propose or output shell commands unless the user explicitly asks.
-        o Answer user questions about the environment, past commands, and 
+        - Never propose or output shell commands unless the user explicitly asks.
+        - Answer user questions about the environment, past commands, and 
           their results in plain text.
-        o Be precise and succinct: short answers when enough, longer when needed.
-        o Do not ask follow-ups.
+        - Be precise and succinct: short answers when enough, longer when needed.
+        - Generate an output which is easily readable in a linux terminal (no unicode, nice format to fit terminal width, proper breaks)
+        - Do not ask follow-ups.
     """).strip()
 
     pieces = [
@@ -221,24 +234,38 @@ class Mode(Enum):
     CHAT = auto()     # produce a short answer
 
 
+
 def _run_shell(cmd: str, capture: bool = False, debug: bool = False) -> str:
-    """Execute *cmd*; optionally capture and return its stdout+stderr."""
     if not cmd:
         return ""
-    try:
-        if capture:
-            if debug:
-                print("Running shell capture cmd ",cmd)
-            res = subprocess.run(cmd, shell=True, text=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            return res.stdout + res.stderr
-        else:
-            if debug:
-                print("Running shell cmd ",cmd)
-            subprocess.run(cmd, shell=True, check=True)
-            return ""
-    except subprocess.CalledProcessError as e:
-        print(f"[error] {e}")
-        return e.stdout + e.stderr if capture else ""
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        return "[fatal] bash not found in PATH"
+
+    full_cmd = [bash_path, "-c", cmd]
+    if debug:
+        print("Running with bash:", full_cmd)
+
+    if capture:
+        result = subprocess.run(full_cmd, text=True, check=False,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return (
+            f"Return code: {result.returncode}\n"
+            f"STDOUT:\n{result.stdout.strip()}\n"
+            f"STDERR:\n{result.stderr.strip()}"
+        )
+    else:
+        try:
+            subprocess.run(full_cmd, check=True)
+            return f"Executed command: {cmd}\nReturn code: 0"
+        except subprocess.CalledProcessError as e:
+            return (
+                f"Return code: {e.returncode}\n"
+                f"STDOUT:\n{e.stdout or ''}\n"
+                f"STDERR:\n{e.stderr or ''}"
+            )
+
+
 
 def build_menu(mode: Mode) -> str:
     return textwrap.dedent(
@@ -262,20 +289,23 @@ def session(task: str, model: str, include_history: bool, debug: bool, start_in_
     mode = Mode.CHAT if start_in_chat else Mode.COMMAND
     extra: List[str] = []
     last_command = ""
+    need_llm = True
 
 
     while True:
         if debug:
             print("Mode is ", mode)
-        prompt = build_command_prompt(task, extra, include_history) if mode == Mode.COMMAND else build_chat_prompt(task, extra, include_history)
-        if debug:
-            print("[debug] LLM prompt:\n", prompt)
-        answer = ask_openai(prompt, model)
-        if mode == Mode.COMMAND:
-            last_command = answer
-            print(f"\n[command] {last_command}")
-        else:
-            print(f"\n[answer] {answer}")
+        if need_llm:    
+            prompt = build_command_prompt(task, extra, include_history) if mode == Mode.COMMAND else build_chat_prompt(task, extra, include_history)
+            if debug:
+                print("[debug] Calling LLM with prompt:\n", prompt)
+            answer = ask_openai(prompt, model)
+            if mode == Mode.COMMAND:
+                last_command = answer
+                print(f"\n[command] {last_command}")
+            else:
+                print(format_output(answer))
+            need_llm = False    
 
         print(build_menu(mode))
         choice = input("choice > ").strip().lower()
@@ -300,13 +330,18 @@ def session(task: str, model: str, include_history: bool, debug: bool, start_in_
         elif choice == "t":
             task = input("ask > ")
             mode = Mode.CHAT
+            need_llm = True
         elif choice == "a":
             line = input("note > ")
-            if line: extra.append(line)
+            if line: 
+                extra.append(line)
+                need_llm = True
         elif choice == "n":
             task = input("new task > ")
             mode = Mode.COMMAND
+            need_llm = True
         elif choice == "r":
+            need_llm = True
             continue
         else:
             print("!? unknown choice")
